@@ -1,0 +1,63 @@
+1) Functional requirements (Functions/Services)
+A. User & access services
+FR1 – Authentication: Users can log in with a username/password.
+FR2 – Role-based access: The system restricts actions based on role (Member, Librarian, Administrator).
+FR3 – View account info (Member): Members can view their current loans (what they have borrowed and due dates).
+
+B. Catalogue / search services
+FR4 – Search books: Members (and staff) can search by title and/or author.
+FR5 – Availability display: Search results show current status: Available / Borrowed / Reserved.
+
+C. Circulation services (borrow/return/reserve)
+FR6 – Borrow book: A Member can borrow a book only if it is Available and the member is eligible.
+FR7 – Borrowing limit enforcement: A Member can borrow up to 5 books at a time. Attempts beyond this are rejected with a clear message.
+FR8 – Return book: A Member (or Librarian processing the return) can return a borrowed book and the system updates status accordingly.
+FR9 – Reserve book: A Member can place a reservation only if the book is currently Borrowed (or otherwise not Available).
+FR10 – Reservation expiry rule: A reservation expires if not collected/processed within 3 days (after it becomes ready for pickup / made available—implementation will define the trigger).
+FR11 – Status tracking (automatic): The system automatically updates a book’s status after each action (Borrow/Return/Reserve/Expiry).
+
+D. Librarian services
+FR12 – Manage book records (CRUD): Librarians can add, update, and remove book records.
+FR13 – Handle requests: Librarians can process borrowing, returns, and reservation handling (e.g., marking a reservation as collected/expired).
+
+E. Administrator services
+FR14 – Account management: Administrators can create/update/disable Member and Librarian accounts.
+FR15 – Rule configuration: Administrators can set key rules (at minimum: max borrowed books, reservation expiry days; optionally loan period and late penalty rules).
+
+F. Reporting / outputs
+FR16 – Overdue report: Librarians can generate a simple list of overdue books (book + borrower + due date).
+FR17 – Notifications (basic): The system can generate alerts for:
+- due date approaching
+- overdue items
+- reservation available / reservation expired
+(For a partial system this can be “in-app messages” or console output.)
+
+2) Non-functional requirements (Quality attributes / constraints)
+NFR1 – Performance: Core actions (search, borrow, return, reserve) should complete quickly (e.g., near-instant for typical class-size datasets).
+
+NFR2 – Security:
+Passwords must not be stored in plain text (use hashing).
+Enforce role-based permissions for all privileged actions.
+
+NFR3 – Data integrity & consistency:
+A book cannot be borrowed by two members at once.
+Status transitions must be valid (e.g., only “Borrowed” can be “Returned”).
+Borrow limit (5) and reservation expiry (3 days) must always be enforced.
+
+NFR4 – Reliability & error handling: The system must handle invalid inputs gracefully (unknown book ID, wrong credentials, trying to reserve an available book, etc.) without crashing.
+
+NFR5 – Maintainability (OO design): Code should be modular and readable, demonstrating OO principles:
+
+Encapsulation: internal state hidden behind methods (e.g., status changes only via methods).
+
+Inheritance: shared “User” behaviour reused by Member/Librarian/Admin.
+
+Polymorphism: role-specific behaviour via overridden methods or interfaces.
+
+NFR6 – Usability: Clear prompts/messages; users can understand why an action failed (e.g., “limit reached”).
+
+NFR7 – Auditability (recommended): Log key actions (borrow/return/reserve/admin changes) for troubleshooting.
+
+NFR8 – Portability: Runs consistently on standard environments for the chosen language (e.g., Windows/macOS/Linux).
+
+NFR9 – Testability: Core rules (borrow limit, expiry, status transitions) should be unit-testable.
