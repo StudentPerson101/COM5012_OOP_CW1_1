@@ -1,0 +1,150 @@
+// Pseudo code in C++ based on the library system class diagram
+
+#include <string>
+#include <map>
+#include <list>
+#include <vector>
+
+// Pseudo Date class
+class Date {
+    // Implementation omitted
+};
+
+enum class BookStatus {
+    AVAILABLE,
+    BORROWED,
+    RESERVED
+};
+
+enum class ReservationStatus {
+    ACTIVE,
+    CANCELLED,
+    EXPIRED
+};
+
+class LibraryRules {
+public:
+    int maxBorrowedBooks = 5;
+    int loanPeriodDays = 14;
+    int maxReservationDays = 3;
+    
+    Date calculateDueDate(Date borrowDate);
+    Date calculateReservationExpiry(Date fromDate);
+};
+
+class AbstractUser {
+protected:
+    std::string userId;
+    std::string username;
+    std::string password;
+    bool isActive;
+    
+public:
+    bool logIn(std::string password);
+    void logOut();
+    virtual int getBorrowLimit() = 0;
+};
+
+class Member : public AbstractUser {
+private:
+    std::list<Loan> activeLoans;
+    
+public:
+    std::list<Book> searchBooks(std::string title, std::string author);
+    Loan borrowBook(Book book, LibraryRules rules);
+    Reservation reserveBook(Book book);
+    void returnBook(Loan loan);
+    int getBorrowLimit() override;
+};
+
+class Librarian : public AbstractUser {
+public:
+    void addBook(Book book);
+    void updateBook(Book book);
+    void issueLoan(Member member, Book book, LibraryRules rules);
+    Loan acceptReturn(Book book);
+    void getOverdueReport(Date date);
+    int getBorrowLimit() override;
+};
+
+class Administrator : public AbstractUser {
+public:
+    void createUser(AbstractUser user);
+    void disableUser(AbstractUser userId);
+    void setBorrowLimit(int maxBooks, int reservationDays, int loanPeriodDays);
+    int getBorrowLimit() override;
+};
+
+class Manager : public AbstractUser {
+public:
+    int getOverdueReport(Book book, LibraryRules rules);
+    int getBorrowLimit() override;
+};
+
+class Book {
+private:
+    std::string bookId;
+    std::string title;
+    std::string author;
+    BookStatus status;
+    Loan currentLoan;
+    Reservation currentReservation;
+    
+public:
+    void borrow(Loan loan);
+    void returnBook();
+    void reserve(Reservation reservation);
+    void cancelReservation();
+    void markReturned();
+    void markExpired();
+};
+
+class Loan {
+private:
+    std::string loanId;
+    Date dateBorrowed;
+    Date dateDue;
+    Date dateReturned;
+    
+public:
+    bool isOverdue(Date date);
+    void close(Date returnDate);
+};
+
+class CurrentLoan : public Loan {
+public:
+    void renew(Date newDueDate);
+    bool isRenewable();
+    void markReturned(Reservation reservation);
+};
+
+class Reservation {
+private:
+    std::string reservationId;
+    Date reservedOn;
+    Date expirationDate;
+    ReservationStatus status;
+    
+public:
+    bool isExpired(Date date);
+    void cancel();
+    void markCollected();
+    void markExpired();
+};
+
+class LibrarySystem {
+private:
+    std::map<std::string, AbstractUser*> users;  // Using pointers for polymorphism
+    std::map<std::string, Book> books;
+    std::map<std::string, Loan> loans;
+    std::list<Reservation> reservations;
+    LibraryRules rules;
+    
+public:
+    void authenticate(std::string username, std::string password);
+    std::list<Book> searchBooks(std::string title, std::string author);
+    Loan borrowBook(std::string memberId, std::string bookId);
+    Reservation reserveBook(std::string memberId, std::string bookId);
+    void returnBook(std::string loanId);
+    void listExpiredOverdue(Date date);
+};
