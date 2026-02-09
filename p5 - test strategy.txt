@@ -1,0 +1,125 @@
+1) Testing Objectives and Scope
+The testing strategy covers:
+- Functional Testing – ensure user authentication, book search, borrow/return flows, reservation handling and rules enforcement work as intended.
+- Verification of Business Logic – especially for borrow limits, reservation expiry, overdue detection, and role-specific actions (admin, librarian, member).
+- Quality Attributes – correctness, consistency, error handling, and robustness under valid/invalid inputs.
+
+Included:
+- User login/logout and role permissions
+- Book catalog operations
+- Loan and reservation flows
+- Library rules (limits and periods)
+Excluded (out of scope for partial system):
+- Performance/load/stress testing
+- UI tests beyond minimal console interaction
+- Security testing beyond login validation
+
+
+2) Test Approach & Types
+Both manual and automated tests will be used where possible:
+Functional Testing
+
+– Unit tests for individual modules (e.g., Book, Loan, Reservation, User).
+– Integration tests to validate interactions between modules, e.g., borrowing updates book status.
+Black-Box Testing
+
+– Derive test cases from requirements without knowing internal code.
+Risk-Based Testing
+
+Prioritize tests for core flows with higher risk impact (e.g., over-borrowing, reservation expiry).
+
+
+3) Testing Levels
+- Unit Testing - Individual class behaviors (e.g., Loan.isOverdue() correctness).
+- Integration Testing - Cross-component flows (e.g., member borrows a book, reservation is updated, loan created).
+- System Testing - End-to-end scenario execution across roles.
+- Acceptance Testing - Validate system meets requirements (e.g., business rule enforcement).
+
+
+4) Example Test Cases
+
+Test Case A: User Login (FR1)
+- Given the system stores user credentials
+- When a valid user enters correct ID & password
+- Then login succeeds and user role is set
+Invalid login:
+- Given wrong password
+- Then login should fail
+
+Test Case B: Search Books (FR2)
+- Given books in catalog
+- When user searches title = "Data Structures"
+- Then system returns all matching books
+
+Test Case C: Borrow a Book (FR3)
+- Given a Member with fewer than max allowed loans
+- When member tries to borrow an available book
+- Then loan is created and book status becomes BORROWED
+Negative Scenario:
+- Given member reached max loans
+- When borrow requested
+- Then system denies request and returns appropriate error
+
+Test Case D: Return a Book (FR4)
+- Given a book on loan
+- When user requests return
+- Then loan is closed and book status becomes AVAILABLE
+
+Test Case E: Reservation Expiry (FR6)
+- Given a reservation created X days ago
+- And current date > expiry from rules
+- When expireReservations() runs
+- Then reservation status becomes EXPIRED
+
+Test Case F: Max Borrow Limit Enforcement (NFR)
+- Given rules with max borrow = 3
+- When member has borrowed 3 already
+- Then further borrow should be blocked
+
+
+5) Test Environment & Data
+- Environment: Local development or CI environment where the system runs console interface.
+- Test Data: Sample users (librarian, admin, member), sample books, dates for loans/reservations covering edge cases.
+
+
+
+6) Metrics & Reporting
+Track results for:
+- Pass/Fail per test
+- Requirement coverage: list which requirement each test validates
+- Defects reported by test case ID
+Use a simple reporting sheet or spreadsheet summarizing:
+
+
+7) Exit Criteria
+Testing can be considered complete when:
+- All high priority functional tests pass
+- No critical defects remain
+- Core requirements (FR1–FR6) covered by test cases
+
+
+8) Traceability
+- Maintain a matrix mapping requirements to test cases to ensure coverage. This helps confirm every requirement is testable & tested.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
