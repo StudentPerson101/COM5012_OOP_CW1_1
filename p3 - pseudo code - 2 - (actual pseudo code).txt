@@ -1,0 +1,545 @@
+========================================
+DATA MODELS / ENTITIES
+========================================
+
+ENUM Role = { MEMBER, LIBRARIAN, ADMIN }
+ENUM BookStatus = { AVAILABLE, BORROWED, RESERVED }
+
+CLASS User
+    ATTR id
+    ATTR username
+    ATTR passwordHash
+    ATTR role
+    ATTR isActive
+
+CLASS Member EXTENDS User
+    ATTR loanIds : List<LoanId>
+
+CLASS Librarian EXTENDS User
+    // no extra required fields
+
+CLASS Administrator EXTENDS User
+    // no extra required fields
+
+CLASS Book
+    ATTR id
+    ATTR title
+    ATTR author
+    ATTR status : BookStatus
+    ATTR currentLoanId : LoanId or NULL
+    ATTR activeReservationId : ReservationId or NULL
+
+CLASS Loan
+    ATTR id
+    ATTR bookId
+    ATTR memberId
+    ATTR borrowedAt : DateTime
+    ATTR dueAt : DateTime
+    ATTR returnedAt : DateTime or NULL
+
+CLASS Reservation
+    ATTR id
+    ATTR bookId
+    ATTR memberId
+    ATTR createdAt : DateTime
+    ATTR readyAt : DateTime or NULL
+    ATTR expiresAt : DateTime or NULL
+    ATTR collectedAt : DateTime or NULL
+    ATTR status : { ACTIVE, READY, EXPIRED, COLLECTED, CANCELLED }
+
+CLASS RulesConfig
+    ATTR maxBorrowedBooks = 5
+    ATTR reservationExpiryDays = 3
+    ATTR loanPeriodDays = (optional)
+    ATTR latePenaltyRules = (optional)
+
+CLASS Notification
+    ATTR id
+    ATTR userId
+    ATTR type : { DUE_SOON, OVERDUE, RES_AVAILABLE, RES_EXPIRED }
+    ATTR message
+    ATTR createdAt
+    ATTR isRead
+
+========================================
+STORAGE / REPOSITORIES (ABSTRACT)
+========================================
+
+REPO Users
+    FUNCTION findByUsername(username) -> User or NULL
+    FUNCTION findById(userId) -> User or NULL
+    FUNCTION save(user)
+    FUNCTION disable(userId)
+
+REPO Books
+    FUNCTION findById(bookId) -> Book or NULL
+    FUNCTION searchByTitleAuthor(titleQuery, authorQuery) -> List<Book>
+    FUNCTION save(book)
+    FUNCTION delete(bookId)
+
+REPO Loans
+    FUNCTION findActiveLoanByBook(bookId) -> Loan or NULL
+    FUNCTION findActiveLoansByMember(memberId) -> List<Loan>
+    FUNCTION save(loan)
+
+REPO Reservations
+    FUNCTION findActiveReservationByBook(bookId) -> Reservation or NULL
+    FUNCTION findById(resId) -> Reservation or NULL
+    FUNCTION save(reservation)
+    FUNCTION findExpiredReservations(now) -> List<Reservation>
+
+REPO Notifications
+    FUNCTION save(notification)
+    FUNCTION listByUser(userId) -> List<Notification>
+
+REPO Rules
+    FUNCTION get() -> RulesConfig
+    FUNCTION save(rulesConfig)
+
+REPO AuditLog
+    FUNCTION write(eventType, actorUserId, entityType, entityId, details, timestamp)
+
+========================================
+SECURITY / AUTH
+========================================
+
+FUNCTION hashPassword(plainTextPassword) -> hash
+FUNCTION verifyPassword(plainTextPassword, hash) -> boolean
+
+FUNCTION requireActiveUser(user)
+    IF user is NULL OR user.isActive == false
+        RAISE Error("Account disabled or not found")
+
+FUNCTION requireRole(user, allowedRoles)
+    requireActiveUser(user)
+    IF user.role NOT IN allowedRoles
+        RAISE Error("Permission denied")
+
+========================================
+FR1: AUTHENTICATION
+========================================
+
+FUNCTION login(username, password) -> SessionToken or Error
+    user = Users.findByUsername(username)
+    IF user == NULL
+        RETURN Error("Wrong credentials")
+
+    IF user.isActive == false
+        RETURN Error("Account disabled")
+
+    IF verifyPassword(password, user.passwordHash) == false
+        RETURN Error("Wrong credentials")
+
+    token = createSessionToken(user.id, user.role)
+    RETURN token
+
+========================================
+FR2: ROLE-BASED ACCESS (ENFORCE IN ALL PRIVILEGED ACTIONS)
+========================================
+# Use requireRole(user, {...}) at start of procedures
+
+========================================
+FR3: VIEW ACCOUNT INFO (MEMBER)
+========================================
+
+FUNCTION viewMemberLoans(actorUserId) -> List<Loan> or Error
+    actor = Users.findById(actorUserId)
+    requireRole(actor, { MEMBER })
+
+    loans = Loans.findActiveLoansByMember(actor.id)
+    RETURN loans  # includes book + due date if joined/displayed
+
+========================================
+FR4/FR5: SEARCH + AVAILABILITY DISPLAY
+========================================
+
+FUNCTION searchBooks(actorUserId, titleQuery, authorQuery) -> List<SearchResult> or Error
+    actor = Users.findById(actorUserId)
+    requireRole(actor, { MEMBER, LIBRARIAN, ADMIN })
+
+    books = Books.searchByTitleAuthor(titleQuery, authorQuery)
+
+    results = EMPTY LIST
+    FOR each book IN books
+        results.ADD({
+            bookId: book.id,
+            title: book.title,
+            author: book.author,
+            status: book.status  # AVAILABLE / BORROWED / RESERVED
+        })
+
+    RETURN results
+
+========================================
+FR6/FR7: BORROW BOOK + LIMIT ENFORCEMENT
+========================================
+
+FUNCTION isMemberEligibleToBorrow(memberId) -> boolean
+    rules = Rules.get()
+    activeLoans = Loans.findActiveLoansByMember(memberId)
+    IF COUNT(activeLoans) >= rules.maxBorrowedBooks
+        RETURN false
+    RETURN true
+
+FUNCTION borrowBook(actorUserId, memberId, bookId) -> Success or Error
+    actor = Users.findById(actorUserId)
+
+    # Member can borrow for self; Librarian can process for any member
+    IF actor.role == MEMBER AND actor.id != memberId
+        RETURN Error("Permission denied")
+
+    requireRole(actor, { MEMBER, LIBRARIAN })
+
+    member = Users.findById(memberId)
+    requireRole(member, { MEMBER })  # also checks active
+
+    book = Books.findById(bookId)
+    IF book == NULL
+        RETURN Error("Unknown book ID")
+
+    # DATA INTEGRITY: book cannot be borrowed by two members at once
+    IF book.status != AVAILABLE
+        RETURN Error("Book is not available")
+
+    IF isMemberEligibleToBorrow(memberId) == false
+        rules = Rules.get()
+        RETURN Error("Borrowing limit reached (max " + rules.maxBorrowedBooks + ")")
+
+    # Create loan
+    rules = Rules.get()
+    loan = new Loan()
+    loan.bookId = bookId
+    loan.memberId = memberId
+    loan.borrowedAt = NOW()
+    loan.dueAt = NOW() + rules.loanPeriodDays (if defined) ELSE defaultDueDate()
+
+    Loans.save(loan)
+
+    # Update book status automatically (FR11)
+    book.status = BORROWED
+    book.currentLoanId = loan.id
+    Books.save(book)
+
+    AuditLog.write("BORROW", actor.id, "BOOK", book.id, details, NOW())
+
+    RETURN Success("Borrowed successfully")
+
+========================================
+FR8: RETURN BOOK
+========================================
+
+FUNCTION returnBook(actorUserId, bookId) -> Success or Error
+    actor = Users.findById(actorUserId)
+    requireRole(actor, { MEMBER, LIBRARIAN })
+
+    book = Books.findById(bookId)
+    IF book == NULL
+        RETURN Error("Unknown book ID")
+
+    IF book.status != BORROWED
+        RETURN Error("Only borrowed books can be returned")
+
+    loan = Loans.findActiveLoanByBook(bookId)
+    IF loan == NULL
+        RETURN Error("No active loan found for this book")
+
+    # If actor is a Member, they can only return their own borrowed book
+    IF actor.role == MEMBER AND loan.memberId != actor.id
+        RETURN Error("Permission denied")
+
+    # Close loan
+    loan.returnedAt = NOW()
+    Loans.save(loan)
+
+    # If there is an active reservation, book becomes RESERVED/READY, else AVAILABLE
+    res = Reservations.findActiveReservationByBook(bookId)
+
+    IF res != NULL
+        book.status = RESERVED
+        res.readyAt = NOW()
+        res.expiresAt = NOW() + Rules.get().reservationExpiryDays
+        res.status = READY
+        Reservations.save(res)
+
+        Notifications.save(makeNotification(
+            userId=res.memberId,
+            type=RES_AVAILABLE,
+            message="Reservation available for pickup: " + book.title
+        ))
+    ELSE
+        book.status = AVAILABLE
+
+    book.currentLoanId = NULL
+    Books.save(book)
+
+    AuditLog.write("RETURN", actor.id, "BOOK", book.id, details, NOW())
+
+    RETURN Success("Returned successfully")
+
+========================================
+FR9: RESERVE BOOK + VALIDATION
+========================================
+
+FUNCTION reserveBook(actorUserId, bookId) -> Success or Error
+    actor = Users.findById(actorUserId)
+    requireRole(actor, { MEMBER })
+
+    book = Books.findById(bookId)
+    IF book == NULL
+        RETURN Error("Unknown book ID")
+
+    IF book.status == AVAILABLE
+        RETURN Error("Cannot reserve an available book")
+
+    existing = Reservations.findActiveReservationByBook(bookId)
+    IF existing != NULL
+        RETURN Error("Book already reserved")
+
+    reservation = new Reservation()
+    reservation.bookId = bookId
+    reservation.memberId = actor.id
+    reservation.createdAt = NOW()
+    reservation.status = ACTIVE
+    Reservations.save(reservation)
+
+    # Book stays BORROWED, or RESERVED if already in that state; status tracking occurs via actions (FR11)
+    book.activeReservationId = reservation.id
+    Books.save(book)
+
+    AuditLog.write("RESERVE", actor.id, "BOOK", book.id, details, NOW())
+
+    RETURN Success("Reserved successfully")
+
+========================================
+FR10: RESERVATION EXPIRY RULE (3 DAYS AFTER READY)
+========================================
+
+FUNCTION expireReservationsJob()
+    now = NOW()
+    expiredList = Reservations.findExpiredReservations(now)
+
+    FOR each res IN expiredList
+        IF res.status == READY AND res.expiresAt <= now
+            res.status = EXPIRED
+            Reservations.save(res)
+
+            book = Books.findById(res.bookId)
+
+            # If book is currently RESERVED only because of this reservation, release it
+            IF book != NULL AND book.activeReservationId == res.id AND book.status == RESERVED
+                book.status = AVAILABLE
+                book.activeReservationId = NULL
+                Books.save(book)
+
+            Notifications.save(makeNotification(
+                userId=res.memberId,
+                type=RES_EXPIRED,
+                message="Reservation expired for book: " + (book.title if book else res.bookId)
+            ))
+
+            AuditLog.write("RES_EXPIRE", SYSTEM, "RESERVATION", res.id, details, now)
+
+========================================
+FR11: STATUS TRACKING (AUTOMATIC)
+========================================
+# Enforced in borrowBook(), returnBook(), reserveBook(), expireReservationsJob()
+# Only allow valid transitions:
+# AVAILABLE -> BORROWED (borrow)
+# BORROWED -> AVAILABLE or RESERVED (return)
+# BORROWED -> (reservation can be created but status stays BORROWED)
+# RESERVED -> AVAILABLE (expiry) or BORROWED (collection flow if implemented)
+
+========================================
+FR12: LIBRARIAN MANAGE BOOK RECORDS (CRUD)
+========================================
+
+FUNCTION addBook(actorUserId, title, author) -> Success or Error
+    actor = Users.findById(actorUserId)
+    requireRole(actor, { LIBRARIAN })
+
+    book = new Book(title, author)
+    book.status = AVAILABLE
+    Books.save(book)
+
+    AuditLog.write("BOOK_ADD", actor.id, "BOOK", book.id, details, NOW())
+    RETURN Success("Book added")
+
+FUNCTION updateBook(actorUserId, bookId, fieldsToUpdate) -> Success or Error
+    actor = Users.findById(actorUserId)
+    requireRole(actor, { LIBRARIAN })
+
+    book = Books.findById(bookId)
+    IF book == NULL
+        RETURN Error("Unknown book ID")
+
+    APPLY fieldsToUpdate to book (title/author only; status via rules only)
+    Books.save(book)
+
+    AuditLog.write("BOOK_UPDATE", actor.id, "BOOK", book.id, details, NOW())
+    RETURN Success("Book updated")
+
+FUNCTION removeBook(actorUserId, bookId) -> Success or Error
+    actor = Users.findById(actorUserId)
+    requireRole(actor, { LIBRARIAN })
+
+    book = Books.findById(bookId)
+    IF book == NULL
+        RETURN Error("Unknown book ID")
+
+    IF book.status == BORROWED
+        RETURN Error("Cannot remove a borrowed book")
+
+    Books.delete(bookId)
+    AuditLog.write("BOOK_DELETE", actor.id, "BOOK", bookId, details, NOW())
+    RETURN Success("Book removed")
+
+========================================
+FR13: LIBRARIAN HANDLE REQUESTS (PROCESS + MARK COLLECTED/EXPIRED)
+========================================
+
+FUNCTION markReservationCollected(actorUserId, reservationId) -> Success or Error
+    actor = Users.findById(actorUserId)
+    requireRole(actor, { LIBRARIAN })
+
+    res = Reservations.findById(reservationId)
+    IF res == NULL
+        RETURN Error("Unknown reservation ID")
+
+    IF res.status != READY
+        RETURN Error("Reservation not ready for collection")
+
+    book = Books.findById(res.bookId)
+    IF book == NULL OR book.status != RESERVED
+        RETURN Error("Book not in reserved state")
+
+    # Collected implies immediate borrow to the reserving member (common flow)
+    # Enforce borrow limit
+    IF isMemberEligibleToBorrow(res.memberId) == false
+        RETURN Error("Member borrow limit reached; cannot collect reservation")
+
+    res.status = COLLECTED
+    res.collectedAt = NOW()
+    Reservations.save(res)
+
+    # Create loan + set book BORROWED (same as borrowBook logic)
+    create loan for res.memberId and book.id
+    set book.status = BORROWED; clear activeReservationId
+    save updates
+
+    AuditLog.write("RES_COLLECT", actor.id, "RESERVATION", res.id, details, NOW())
+    RETURN Success("Reservation collected and book borrowed")
+
+========================================
+FR14: ADMIN ACCOUNT MANAGEMENT
+========================================
+
+FUNCTION createUser(actorUserId, username, plainPassword, role) -> Success or Error
+    actor = Users.findById(actorUserId)
+    requireRole(actor, { ADMIN })
+
+    user = new User()
+    user.username = username
+    user.passwordHash = hashPassword(plainPassword)  # NFR2
+    user.role = role
+    user.isActive = true
+    Users.save(user)
+
+    AuditLog.write("USER_CREATE", actor.id, "USER", user.id, details, NOW())
+    RETURN Success("User created")
+
+FUNCTION updateUser(actorUserId, userId, fieldsToUpdate) -> Success or Error
+    actor = Users.findById(actorUserId)
+    requireRole(actor, { ADMIN })
+
+    user = Users.findById(userId)
+    IF user == NULL
+        RETURN Error("Unknown user ID")
+
+    APPLY fieldsToUpdate (role, username, isActive, password if provided->hash)
+    Users.save(user)
+
+    AuditLog.write("USER_UPDATE", actor.id, "USER", user.id, details, NOW())
+    RETURN Success("User updated")
+
+FUNCTION disableUser(actorUserId, userId) -> Success or Error
+    actor = Users.findById(actorUserId)
+    requireRole(actor, { ADMIN })
+
+    Users.disable(userId)
+    AuditLog.write("USER_DISABLE", actor.id, "USER", userId, details, NOW())
+    RETURN Success("User disabled")
+
+========================================
+FR15: ADMIN RULE CONFIGURATION
+========================================
+
+FUNCTION updateRules(actorUserId, newRules) -> Success or Error
+    actor = Users.findById(actorUserId)
+    requireRole(actor, { ADMIN })
+
+    rules = Rules.get()
+    APPLY newRules to rules (maxBorrowedBooks, reservationExpiryDays, etc.)
+    Rules.save(rules)
+
+    AuditLog.write("RULES_UPDATE", actor.id, "RULES", "GLOBAL", details, NOW())
+    RETURN Success("Rules updated")
+
+========================================
+FR16: OVERDUE REPORT
+========================================
+
+FUNCTION generateOverdueReport(actorUserId) -> List<ReportRow> or Error
+    actor = Users.findById(actorUserId)
+    requireRole(actor, { LIBRARIAN })
+
+    rows = EMPTY LIST
+    FOR each loan IN all active loans
+        IF loan.dueAt < NOW()
+            book = Books.findById(loan.bookId)
+            member = Users.findById(loan.memberId)
+            rows.ADD({ bookTitle: book.title, borrower: member.username, dueDate: loan.dueAt })
+
+    RETURN rows
+
+========================================
+FR17: NOTIFICATIONS (BASIC)
+========================================
+
+FUNCTION notificationsJob()
+    now = NOW()
+
+    # Due soon alerts (e.g., due within 2 days; implementation-defined)
+    FOR each active loan
+        IF loan.dueAt within next X days
+            Notifications.save(DUE_SOON message)
+
+    # Overdue alerts
+    FOR each active loan
+        IF loan.dueAt < now
+            Notifications.save(OVERDUE message)
+
+    # Reservation available/expired handled in returnBook() and expireReservationsJob()
+
+========================================
+NON-FUNCTIONAL ENFORCEMENTS (NFRs)
+========================================
+
+NFR2 Security:
+    - Always store passwordHash, never plain text
+    - Enforce requireRole on all privileged operations
+
+NFR3 Data integrity:
+    - In borrowBook(): require book.status == AVAILABLE
+    - In returnBook(): require book.status == BORROWED
+    - Borrow limit enforced via isMemberEligibleToBorrow()
+    - Reservation expiry enforced via expireReservationsJob()
+
+NFR4 Error handling:
+    - Return clear Error(message) for invalid input or state
+
+NFR5 OO design:
+    - User base class; Member/Librarian/Admin inherit
+    - Encapsulate status changes inside service methods
+
+NFR7 Auditability:
+    - AuditLog.write(...) on borrow/return/reserve/admin changes
